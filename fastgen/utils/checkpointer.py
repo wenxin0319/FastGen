@@ -16,6 +16,7 @@ from torch.distributed.checkpoint.state_dict import (
     StateDictOptions,
 )
 from torch.distributed.checkpoint.stateful import Stateful
+from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
 
 from fastgen.configs.config import BaseCheckpointerConfig
 from fastgen.utils.distributed.s3_filesystem import S3StorageWriter, S3StorageReader
@@ -397,39 +398,51 @@ class FSDPCheckpointer(Checkpointer):
             for k, v in optimizer_dict.items():
                 logger.info(f"Loading the FSDP optimizer dict for key {k}...")
                 optim_wrapper = OptimizerWrapper(model=model_dict[k], optimizer=v)
-                # For fresh optimizers with no state, we need to initialize with fake gradients
-                # that are DTensors (not regular Tensors) to avoid the mixed Tensor/DTensor error
-                if len(v.state) == 0:
-                    # Set fake DTensor gradients to initialize optimizer state
-                    for param in model_dict[k].parameters():
-                        if param.requires_grad and param.grad is None:
-                            param.grad = torch.zeros_like(param)
                 optim_state_dict = optim_wrapper.state_dict()
                 assert os.path.exists(f"{path}.{k}_model"), f"Key {k} does not exist in FSDP model dict"
                 storage_reader = self.get_storage_reader(checkpoint_path=f"{path}.{k}_optim")
 
                 try:
-                    dcp.load(
-                        state_dict=optim_state_dict,
-                        storage_reader=storage_reader,
-                    )
-                    optim_wrapper.load_state_dict(optim_state_dict)
-                    logger.success(f"Successfully loaded optimizer state for {k}")
+                    metadata = storage_reader.read_metadata()
+                    # DCP metadata keys are flattened ("state.<param>.<buffer>"),
+                    # while optim_state_dict keys are nested ("state", "param_groups").
+                    # Compare at the parameter level instead.
+                    ckpt_param_names = set()
+                    for mkey in metadata.state_dict_metadata:
+                        if mkey.startswith("state."):
+                            rest = mkey[len("state.") :]
+                            last_dot = rest.rfind(".")
+                            if last_dot > 0:
+                                ckpt_param_names.add(rest[:last_dot])
+
+                    current_param_names = set(optim_state_dict.get("state", {}).keys())
+
+                    missing_from_ckpt = current_param_names - ckpt_param_names
+                    extra_in_ckpt = ckpt_param_names - current_param_names
+                    if missing_from_ckpt:
+                        logger.warning(
+                            f"Optimizer {k}: {len(missing_from_ckpt)} params in current model "
+                            f"but missing from checkpoint (will keep initialized values)"
+                        )
+                        logger.debug(f"Missing params: {sorted(missing_from_ckpt)}")
+                    if extra_in_ckpt:
+                        logger.warning(
+                            f"Optimizer {k}: {len(extra_in_ckpt)} params in checkpoint "
+                            f"but not in current model (will be ignored)"
+                        )
+                        logger.debug(f"Extra params: {sorted(extra_in_ckpt)}")
+                    if not missing_from_ckpt and not extra_in_ckpt:
+                        logger.info(f"Optimizer {k}: all {len(current_param_names)} params match checkpoint")
                 except Exception as e:
-                    error_msg = str(e)
-                    if (
-                        "Missing key" in error_msg
-                        or "Unexpected key" in error_msg
-                        or "CheckpointException" in error_msg
-                    ):
-                        logger.warning(f"Optimizer checkpoint compatibility issue for {k}: {type(e).__name__}")
-                        logger.warning(f"Initializing fresh optimizer state for {k} - training will continue")
-                        # Reset to fresh optimizer state
-                        v.__setstate__({"state": {}, "param_groups": v.param_groups})
-                        logger.info(f"Reset optimizer state for {k} due to parameter mismatch")
-                    else:
-                        logger.error(f"Unexpected optimizer loading error for {k}: {e}")
-                        raise e
+                    logger.debug(f"Could not read checkpoint metadata for param comparison: {e}")
+
+                dcp.load(
+                    state_dict=optim_state_dict,
+                    storage_reader=storage_reader,
+                    planner=DefaultLoadPlanner(allow_partial_load=True),
+                )
+                optim_wrapper.load_state_dict(optim_state_dict)
+                logger.success(f"Successfully loaded optimizer state for {k}")
 
         state = self._load_checkpoint(f"{path}.pth", device=device)
 

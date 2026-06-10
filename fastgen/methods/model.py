@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 
 
 class FastGenModel(torch.nn.Module):
+    # Preprocessor sub-objects of ``net`` (handled specially for device/dtype placement
+    # in on_train_begin and for torch.compile in apply_torch_compile). Single source of truth.
+    _PREPROCESSOR_ATTRS = ("vae", "text_encoder", "image_encoder")
+
     def __init__(self, config: BaseModelConfig):
         """FastGenModel class for implementing training interface for all fastgen networks.
 
@@ -264,6 +268,46 @@ class FastGenModel(torch.nn.Module):
         if hasattr(self.net, "init_preprocessors") and self.config.enable_preprocessors:
             self.net.init_preprocessors()
 
+    def apply_torch_compile(self):
+        """Compile the training networks in place with torch.compile.
+
+        Called by the trainer after DDP/FSDP wrapping (and after the networks
+        have been moved to their device in ``on_train_begin``) so torch.compile
+        composes with the distributed wrappers. No-op when
+        ``config.torch_compile_mode`` is None.
+
+        The modules compiled are those in model_dict (e.g. net, plus
+        fake_score/discriminator for DMD2) minus the EMA networks, plus the
+        teacher (if any, cf. fsdp_dict) and the net's preprocessors.
+        """
+        mode = self.config.torch_compile_mode
+        if mode is None:
+            return
+
+        # model_dict contains the trainable networks (incl. EMA); EMA networks are
+        # weight-averaged copies that aren't run during training, so drop them.
+        modules = {name: net for name, net in self.model_dict.items() if name not in self.ema_dict}
+        # The teacher is not part of model_dict; add it when present (cf. fsdp_dict).
+        if getattr(self, "teacher", None) is not None:
+            modules["teacher"] = self.teacher
+        # Preprocessors (VAE, text/image encoders) are often lightweight wrappers
+        # (e.g. WanVideoEncoder, SDVAE) that are not nn.Modules themselves but hold
+        # the actual nn.Module under an attribute; compile those submodules too.
+        for name in self._PREPROCESSOR_ATTRS:
+            obj = getattr(self.net, name, None)
+            if obj is None:
+                continue
+            if isinstance(obj, torch.nn.Module):
+                modules[name] = obj
+            else:
+                for attr, submodule in getattr(obj, "__dict__", {}).items():
+                    if isinstance(submodule, torch.nn.Module):
+                        modules[f"{name}.{attr}"] = submodule
+
+        for name, module in modules.items():
+            logger.info(f"Applying torch.compile (mode={mode}) to {name}")
+            module.compile(mode=mode)
+
     def on_train_begin(self, is_fsdp=False):
         self._is_fsdp = is_fsdp  # Store for later use (e.g., to skip EMA during inference)
         ctx = dict(dtype=self.precision, device=self.device)
@@ -306,15 +350,11 @@ class FastGenModel(torch.nn.Module):
         # For networks that don't need gradients, we always manually handle casting and device management
         if hasattr(self.net, "init_preprocessors") and self.config.enable_preprocessors:
             logger.debug(f"Starting moving preprocessors to context: {ctx}.")
-            if hasattr(self.net, "vae"):
-                self.net.vae.to(**ctx)
-                synchronize()
-            if hasattr(self.net, "text_encoder"):
-                self.net.text_encoder.to(**ctx)
-                synchronize()
-            if hasattr(self.net, "image_encoder"):
-                self.net.image_encoder.to(**ctx)
-                synchronize()
+            for name in self._PREPROCESSOR_ATTRS:
+                preprocessor = getattr(self.net, name, None)
+                if preprocessor is not None:
+                    preprocessor.to(**ctx)
+                    synchronize()
             logger.debug(f"Completed moving preprocessors to context: {ctx}.")
 
         synchronize()

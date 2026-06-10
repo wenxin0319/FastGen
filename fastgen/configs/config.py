@@ -160,6 +160,10 @@ class BaseModelConfig:
     # - however, it is required if the model has a discriminator or the net initializes unused modules (e.g., for logvar predictions)
     ddp_find_unused_parameters: bool = True
 
+    # torch.compile mode for the training networks ("default", "reduce-overhead", "max-autotune")
+    # applied in apply_torch_compile. None disables torch.compile.
+    torch_compile_mode: Optional[str] = None
+
     # precision variables (choose from "float64", "float32", "bfloat16", or "float16")
     # (precision of the time steps is handled in the noise scheduler, defaulting to float64 for numerical stability)
 

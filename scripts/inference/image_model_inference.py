@@ -124,6 +124,11 @@ def main(args, config: BaseConfig):
         logger.info(f"image_save_dir: {save_dir}")
     save_dir = Path(save_dir) / prompt_name
 
+    # Optionally compile the networks; no-op unless config.model.torch_compile_mode is set.
+    # Must run before cleanup_unused_modules, which deletes modules that model_dict references.
+    # torch.compile is lazy, so the device placement in setup_inference_modules is still applied.
+    model.apply_torch_compile()
+
     # Remove unused modules to free memory
     cleanup_unused_modules(model, args.do_teacher_sampling)
 

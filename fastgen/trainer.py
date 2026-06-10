@@ -118,6 +118,11 @@ class Trainer:
             logger.info("FSDP wrapping completed")
         else:
             model_ddp = model
+
+        # Compile networks after DDP/FSDP wrapping so torch.compile composes
+        # with the distributed wrappers (no-op if torch_compile_mode is None).
+        model.apply_torch_compile()
+
         self.callbacks.on_model_init_end(model_ddp)
         synchronize()
 

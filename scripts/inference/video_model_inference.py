@@ -564,15 +564,10 @@ def main(args, config: BaseConfig):
         }
         save_dir = save_dir.parent / (save_dir.name + "_hq")
 
-    # Optionally compile the networks; no-op unless config.model.torch_compile_mode is set.
-    # Must run before cleanup_unused_modules, which deletes modules that model_dict references.
-    # torch.compile is lazy, so the device placement in setup_inference_modules is still applied.
-    model.apply_torch_compile()
-
     # Remove unused modules
     cleanup_unused_modules(model, args.do_teacher_sampling)
 
-    # Get precision and set up inference modules
+    # Get precision and set up inference modules (also calls apply_torch_compile internally)
     teacher, student, vae = setup_inference_modules(
         model, config, args.do_teacher_sampling, args.do_student_sampling, model.precision
     )

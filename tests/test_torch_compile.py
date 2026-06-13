@@ -171,7 +171,7 @@ def test_sft_compiled_train_step(sft_model_compiled):
         "neg_condition": torch.zeros(batch_size, 10).to(model.device, model.precision),
     }
 
-    loss_map, outputs = model.single_train_step(data, 0)
+    loss_map, _ = model.single_train_step(data, 0)
     assert "total_loss" in loss_map
     assert not torch.isnan(loss_map["total_loss"])
     loss_map["total_loss"].backward()
@@ -191,12 +191,12 @@ def test_dmd2_compiled_train_step(dmd2_model_compiled):
     }
 
     # Student update step
-    loss_map, outputs = model.single_train_step(data, 0)
+    loss_map, _ = model.single_train_step(data, 0)
     assert "total_loss" in loss_map
     assert not torch.isnan(loss_map["total_loss"])
 
     # Fake score update step
     model.optimizers_zero_grad(1)
-    loss_map, outputs = model.single_train_step(data, 1)
+    loss_map, _ = model.single_train_step(data, 1)
     assert "total_loss" in loss_map
     assert not torch.isnan(loss_map["total_loss"])

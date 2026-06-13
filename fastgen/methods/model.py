@@ -286,7 +286,8 @@ class FastGenModel(torch.nn.Module):
 
         # model_dict contains the trainable networks (incl. EMA); EMA networks are
         # weight-averaged copies that aren't run during training, so drop them.
-        modules = {name: net for name, net in self.model_dict.items() if name not in self.ema_dict}
+        # None entries arise when cleanup_unused_modules has already been called.
+        modules = {name: net for name, net in self.model_dict.items() if name not in self.ema_dict and net is not None}
         # The teacher is not part of model_dict; add it when present (cf. fsdp_dict).
         if getattr(self, "teacher", None) is not None:
             modules["teacher"] = self.teacher

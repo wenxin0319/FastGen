@@ -124,18 +124,22 @@ def load_checkpoint(
 
 
 def cleanup_unused_modules(model: Any, do_teacher_sampling: bool) -> None:
-    """Remove unused modules to free memory.
+    """Free GPU memory held by modules that are not needed for inference.
+
+    Sets attributes to None rather than deleting them so that model_dict
+    property accesses (which read e.g. self.fake_score) return None instead
+    of raising AttributeError.
 
     Args:
         model: Model to clean up
         do_teacher_sampling: Whether teacher sampling will be performed
     """
     if hasattr(model, "fake_score"):
-        del model.fake_score
+        model.fake_score = None
     if hasattr(model, "discriminator"):
-        del model.discriminator
+        model.discriminator = None
     if (not do_teacher_sampling) and hasattr(model, "teacher"):
-        del model.teacher
+        model.teacher = None
 
 
 def setup_inference_modules(
@@ -157,6 +161,8 @@ def setup_inference_modules(
     Returns:
         Tuple of (teacher, student, vae) - any may be None
     """
+    model.apply_torch_compile()  # no-op if torch_compile_mode is None
+
     teacher, student, vae = None, None, None
 
     if do_teacher_sampling:

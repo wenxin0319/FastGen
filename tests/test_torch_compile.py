@@ -121,7 +121,7 @@ def test_dmd2_compile_disabled(dmd2_model_not_compiled):
     assert not _is_compiled(dmd2_model_not_compiled.net)
     assert not _is_compiled(dmd2_model_not_compiled.teacher)
     assert not _is_compiled(dmd2_model_not_compiled.fake_score)
-
+    assert not _is_compiled(dmd2_model_not_compiled.discriminator)
 
 def test_compile_excludes_ema(sft_model_not_compiled):
     # EMA networks live in model_dict but are weight-averaged copies that are not run
